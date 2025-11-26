@@ -2,17 +2,21 @@
 
 ###############################################################################
 # IMAGE SYNC SCRIPT - PREFIX FILTERED WITH EXACT TAG CHECK
-# Sync images between k8s-worker1 and k8s-worker2
-# Only bcm11 and nvcr.io/nvidia
+# Sync images between two worker nodes
+# Only images starting with PREFIX1 and PREFIX2
 ###############################################################################
 
-NODE1="k8s-worker1"
-NODE2="k8s-worker2"
+# --- Load Config File ---
+CONFIG_FILE="$(dirname "$0")/image-sync.conf"
 
-PREFIX1="bcm11"
-PREFIX2="nvcr.io/nvidia"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
+    exit 1
+fi
 
-LOG_DIR="/root/sync-images"
+source "$CONFIG_FILE"
+
+# --- Prepare Logs ---
 mkdir -p "$LOG_DIR"
 
 LOGFILE="$LOG_DIR/image-sync_$(date +%F_%H-%M-%S).log"
@@ -21,8 +25,6 @@ FAILED_LIST="$LOG_DIR/failed_images.txt"
 
 > "$SUCCESS_LIST"
 > "$FAILED_LIST"
-
-MAX_PARALLEL=4
 
 log() {
     echo "[$(date '+%F %T')] $1" | tee -a "$LOGFILE"
@@ -50,7 +52,8 @@ extract_images() {
 image_exists() {
     NODE=$1
     IMAGE=$2
-    ssh -o ConnectTimeout=10 $NODE "crictl images -o json | jq -r '.images[].repoTags[]?' | grep -Fxq '$IMAGE'"
+    ssh -o ConnectTimeout=10 $NODE \
+        "crictl images -o json | jq -r '.images[].repoTags[]?' | grep -Fxq '$IMAGE'"
     return $?
 }
 
@@ -59,6 +62,7 @@ pull_image() {
     IMAGE=$2
     log "Pulling $IMAGE on $NODE"
     ssh -o ConnectTimeout=20 $NODE "crictl pull $IMAGE" >>"$LOGFILE" 2>&1
+
     if [ $? -eq 0 ]; then
         log "SUCCESS: $IMAGE on $NODE"
         echo "$IMAGE" >> "$SUCCESS_LIST"
@@ -72,33 +76,30 @@ pull_images_parallel() {
     NODE=$1
     shift
     IMAGES=("$@")
+
     for img in "${IMAGES[@]}"; do
-        # Skip empty image names
         [ -z "$img" ] && { log "Skipping empty image entry"; continue; }
-        
-        # Check if image already exists on node
+
         if image_exists $NODE "$img"; then
             log "Already exists: $img on $NODE"
             continue
         fi
-        
+
         pull_image $NODE "$img" &
-        
-        # Limit parallel jobs
+
         while [ $(jobs -rp | wc -l) -ge $MAX_PARALLEL ]; do
             sleep 1
         done
     done
+
     wait
 }
 
 log "=== IMAGE SYNC STARTED ==="
 
-# Check SSH
 check_ssh $NODE1
 check_ssh $NODE2
 
-# Fetch images
 log "Fetching images from nodes..."
 images_node1=$(get_images $NODE1)
 images_node2=$(get_images $NODE2)
@@ -109,7 +110,6 @@ list2=$(extract_images "$images_node2")
 log "Images on $NODE1: $(echo "$list1" | wc -l)"
 log "Images on $NODE2: $(echo "$list2" | wc -l)"
 
-# Determine missing images
 mapfile -t missing_on_node1 <<< "$(comm -13 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 mapfile -t missing_on_node2 <<< "$(comm -23 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 
@@ -119,7 +119,6 @@ pull_images_parallel $NODE1 "${missing_on_node1[@]}"
 log "Pulling missing images on $NODE2..."
 pull_images_parallel $NODE2 "${missing_on_node2[@]}"
 
-# Summary
 log "=== SUMMARY ==="
 log "Successful pulls: $(wc -l < $SUCCESS_LIST)"
 log "Failed pulls: $(wc -l < $FAILED_LIST)"
