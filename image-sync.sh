@@ -139,6 +139,16 @@ log "Images on $NODE2: $(echo "$list2" | wc -l)"
 mapfile -t missing_on_node1 <<< "$(comm -13 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 mapfile -t missing_on_node2 <<< "$(comm -23 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 
+# Remove blank/empty entries
+missing_on_node1=($(printf "%s\n" "${missing_on_node1[@]}" | sed '/^\s*$/d'))
+missing_on_node2=($(printf "%s\n" "${missing_on_node2[@]}" | sed '/^\s*$/d'))
+
+# If both arrays are empty → nothing to sync
+if [ ${#missing_on_node1[@]} -eq 0 ] && [ ${#missing_on_node2[@]} -eq 0 ]; then
+    log "All images are already synced"
+    exit 0
+fi
+
 # Pull missing images
 log "Pulling missing images on $NODE1..."
 pull_images_parallel "$NODE1" "${missing_on_node1[@]}"
