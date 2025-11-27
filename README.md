@@ -53,14 +53,20 @@ File: `image-sync.conf`
 NODE1="k8s-worker1"
 NODE2="k8s-worker2"
 
-# Image prefixes
-PREFIX1="bcm11" # (headnode-hosted Harbor registry)
+# Image prefixes to sync
+# bcm11 → Harbor registry images (hosted on headnode)
+# nvcr.io/nvidia → NVIDIA NGC images
+PREFIX1="bcm11"
 PREFIX2="nvcr.io/nvidia"
 
 # Logging directory
 LOG_DIR="/var/log/giindia/sync-worker-node-images"
 
-# Max parallel pull operations
+# Maximum time (in seconds) allowed for pulling an image.
+# Any pull exceeding this limit will be terminated and logged as TIMEOUT.
+TIME_OUT=1800
+
+# Maximum number of parallel pulls
 MAX_PARALLEL=4
 ```
 
