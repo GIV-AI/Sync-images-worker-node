@@ -16,6 +16,14 @@ fi
 
 source "$CONFIG_FILE"
 
+# --- Acquire Lock ---
+LOCK_FILE="/var/run/image-sync.lock"
+exec 200>"$LOCK_FILE"
+flock -n 200 || {
+    echo "ERROR: Script already running. Lock active: $LOCK_FILE"
+    exit 1
+}
+
 # --- Prepare Logs ---
 mkdir -p "$LOG_DIR"
 
@@ -31,13 +39,12 @@ log() {
 }
 
 ###############################################################################
-# SSH CHECK - Optimized (single call, no repeated checks)
+# SSH CHECK - Optimized (single call)
 ###############################################################################
 check_ssh() {
     local NODE="$1"
 
     log "Checking SSH to $NODE"
-
     if ssh -o BatchMode=yes -o ConnectTimeout=10 "$NODE" "echo ok" >/dev/null 2>>"$LOGFILE"; then
         log "SSH OK: $NODE"
     else
@@ -59,19 +66,7 @@ extract_images() {
 }
 
 ###############################################################################
-# Check if image exists on node
-###############################################################################
-image_exists() {
-    local NODE="$1"
-    local IMAGE="$2"
-
-    ssh -o ConnectTimeout=10 "$NODE" \
-        "crictl images -o json | jq -r '.images[].repoTags[]?' | grep -Fxq '$IMAGE'"
-    return $?
-}
-
-###############################################################################
-# Pull image on node
+# Pull image on node (with timeout)
 ###############################################################################
 pull_image() {
     local NODE="$1"
@@ -79,35 +74,39 @@ pull_image() {
 
     log "Pulling $IMAGE on $NODE"
 
-    ssh -o ConnectTimeout=20 "$NODE" "crictl pull $IMAGE" >>"$LOGFILE" 2>&1
+    # --- TIMEOUT CONTROL (60 sec for demo, 1800 sec = 30 min in production) ---
+    ssh -o ConnectTimeout=20 "$NODE" "timeout 1800 crictl pull $IMAGE" \
+        >>"$LOGFILE" 2>&1
+    local EXIT_CODE=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $EXIT_CODE -eq 124 ]; then
+        log "TIMEOUT: Pulling $IMAGE on $NODE exceeded 30 minutes"
+        echo "$IMAGE - TIMEOUT" >> "$FAILED_LIST"
+    elif [ $EXIT_CODE -eq 0 ]; then
         log "SUCCESS: $IMAGE on $NODE"
         echo "$IMAGE" >> "$SUCCESS_LIST"
     else
-        log "FAILED: $IMAGE on $NODE"
-        echo "$IMAGE" >> "$FAILED_LIST"
+        log "FAILED: $IMAGE on $NODE (Exit code: $EXIT_CODE)"
+        echo "$IMAGE - FAILED" >> "$FAILED_LIST"
     fi
 }
 
 ###############################################################################
-# Pull images in parallel with limit
+# Pull images in parallel with MAX_PARALLEL
 ###############################################################################
 pull_images_parallel() {
     local NODE="$1"
     shift
     local IMAGES=("$@")
 
+    log "Pulling ${#IMAGES[@]} missing images on $NODE..."
+
     for img in "${IMAGES[@]}"; do
         [ -z "$img" ] && { log "Skipping empty image entry"; continue; }
 
-        if image_exists "$NODE" "$img"; then
-            log "Already exists: $img on $NODE"
-            continue
-        fi
-
         pull_image "$NODE" "$img" &
 
+        # Limit parallel jobs
         while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
             sleep 1
         done
@@ -125,7 +124,7 @@ log "=== IMAGE SYNC STARTED ==="
 check_ssh "$NODE1"
 check_ssh "$NODE2"
 
-# Fetch images
+# Fetch images from nodes
 log "Fetching images from nodes..."
 images_node1=$(get_images "$NODE1")
 images_node2=$(get_images "$NODE2")
@@ -136,7 +135,7 @@ list2=$(extract_images "$images_node2")
 log "Images on $NODE1: $(echo "$list1" | wc -l)"
 log "Images on $NODE2: $(echo "$list2" | wc -l)"
 
-# Compare images between nodes
+# Determine missing images
 mapfile -t missing_on_node1 <<< "$(comm -13 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 mapfile -t missing_on_node2 <<< "$(comm -23 <(echo "$list1" | sort) <(echo "$list2" | sort))"
 
