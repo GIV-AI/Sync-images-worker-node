@@ -74,8 +74,8 @@ pull_image() {
 
     log "Pulling $IMAGE on $NODE"
 
-    # --- TIMEOUT CONTROL (60 sec for demo, 1800 sec = 30 min in production) ---
-    ssh -o ConnectTimeout=20 "$NODE" "timeout 1800 crictl pull $IMAGE" \
+    # --- TIMEOUT CONTROL
+    ssh -o ConnectTimeout=20 "$NODE" "timeout $TIME_OUT crictl pull $IMAGE" \
         >>"$LOGFILE" 2>&1
     local EXIT_CODE=$?
 
