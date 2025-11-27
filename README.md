@@ -79,8 +79,8 @@ Log files are stored in:
 | File | Description |
 |------|------------|
 | `image-sync_*.log` | Full execution logs |
-| `success_images.txt` | Successfully pulled images |
-| `failed_images.txt` | Failed pulls |
+| `success_images.txt` | Images successfully pulled during the last script run |
+| `failed_images.txt` | Images that failed to pull during the last script run |
 
 Example log entry:
 
