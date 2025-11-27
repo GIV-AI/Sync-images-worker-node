@@ -70,7 +70,11 @@ TIME_OUT=1800
 MAX_PARALLEL=4
 ```
 
-> ⚠ Update `NODE1` and `NODE2` to match your Kubernetes cluster.
+> ⚠ Update `NODE1` and `NODE2` with your Kubernetes worker node hostnames.  
+> ⚠ Replace `bcm11` in `PREFIX1` with your headnode's hostname (Harbor registry host).  
+> ⚠ `LOG_DIR` sets the directory where logs will be stored.  
+> ⚠ `TIME_OUT` prevents deadlocks and long-running stuck image downloads.  
+> ⚠ `MAX_PARALLEL` allows up to 4 simultaneous image pulls on a node.
 
 ---
 
@@ -87,12 +91,8 @@ Log files are stored in:
 | `image-sync_*.log` | Full execution logs |
 | `success_images.txt` | Images successfully pulled during the last script run |
 | `failed_images.txt` | Images that failed to pull during the last script run |
+| `cron.log` | Log output when run via cron scheduler |
 
-Example log entry:
-
-```
-[2025-01-10 16:04:15] SUCCESS: bcm11/myimage:1.0 on k8s-worker2
-```
 
 ---
 
@@ -148,7 +148,5 @@ This tool ensures Kubernetes worker nodes stay synchronized with required images
 
 - Harbor (`bcm11`)
 - NVIDIA NGC (`nvcr.io/nvidia`)
-
-Helping prevent failed Pod scheduling and missing image errors.
 
 ---
