@@ -27,21 +27,29 @@ flock -n 200 || {
 # --- Prepare Logs ---
 mkdir -p "$LOG_DIR"
 
-# One single persistent logfile
+# Single persistent log file
 LOGFILE="$LOG_DIR/image-sync.log"
 
+# Success/failed lists append mode
 SUCCESS_LIST="$LOG_DIR/success_images.txt"
 FAILED_LIST="$LOG_DIR/failed_images.txt"
-
-> "$SUCCESS_LIST"
-> "$FAILED_LIST"
 
 log() {
     echo "[$(date '+%F %T')] $1" | tee -a "$LOGFILE"
 }
 
+append_success() {
+    local IMAGE="$1"
+    echo "[$(date '+%F %T')] $IMAGE" >> "$SUCCESS_LIST"
+}
+
+append_failed() {
+    local IMAGE="$1"
+    echo "[$(date '+%F %T')] $IMAGE" >> "$FAILED_LIST"
+}
+
 ###############################################################################
-# SSH CHECK - Optimized (single call)
+# SSH CHECK
 ###############################################################################
 check_ssh() {
     local NODE="$1"
@@ -78,18 +86,17 @@ pull_image() {
 
     ssh -o ConnectTimeout=20 "$NODE" "timeout $TIME_OUT crictl pull $IMAGE" \
         >>"$LOGFILE" 2>&1
-
     local EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 124 ]; then
         log "TIMEOUT: Pulling $IMAGE on $NODE exceeded timeout"
-        echo "$IMAGE - TIMEOUT" >> "$FAILED_LIST"
+        append_failed "$IMAGE - TIMEOUT"
     elif [ $EXIT_CODE -eq 0 ]; then
         log "SUCCESS: $IMAGE on $NODE"
-        echo "$IMAGE" >> "$SUCCESS_LIST"
+        append_success "$IMAGE"
     else
         log "FAILED: $IMAGE on $NODE (Exit code: $EXIT_CODE)"
-        echo "$IMAGE - FAILED" >> "$FAILED_LIST"
+        append_failed "$IMAGE - FAILED"
     fi
 }
 
@@ -100,13 +107,14 @@ pull_images_parallel() {
     local NODE="$1"
     shift
     local IMAGES=("$@")
+    local PULLED=0
 
     log "Pulling ${#IMAGES[@]} missing images on $NODE..."
 
     for img in "${IMAGES[@]}"; do
         [ -z "$img" ] && { log "Skipping empty image entry"; continue; }
-
         pull_image "$NODE" "$img" &
+        ((PULLED++))
 
         # Limit parallel jobs
         while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
@@ -115,6 +123,11 @@ pull_images_parallel() {
     done
 
     wait
+
+    if [ $PULLED -eq 0 ]; then
+        echo "[$(date '+%F %T')] ---- no new image found ----" >> "$SUCCESS_LIST"
+        echo "[$(date '+%F %T')] ---- no new image found ----" >> "$FAILED_LIST"
+    fi
 }
 
 ###############################################################################
@@ -148,6 +161,8 @@ missing_on_node2=($(printf "%s\n" "${missing_on_node2[@]}" | sed '/^\s*$/d'))
 # If both arrays are empty → nothing to sync
 if [ ${#missing_on_node1[@]} -eq 0 ] && [ ${#missing_on_node2[@]} -eq 0 ]; then
     log "All images are already synced"
+    echo "[$(date '+%F %T')] ---- no new image found ----" >> "$SUCCESS_LIST"
+    echo "[$(date '+%F %T')] ---- no new image found ----" >> "$FAILED_LIST"
     exit 0
 fi
 
