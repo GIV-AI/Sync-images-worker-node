@@ -27,7 +27,9 @@ flock -n 200 || {
 # --- Prepare Logs ---
 mkdir -p "$LOG_DIR"
 
-LOGFILE="$LOG_DIR/image-sync_$(date +%F_%H-%M-%S).log"
+# One single persistent logfile
+LOGFILE="$LOG_DIR/image-sync.log"
+
 SUCCESS_LIST="$LOG_DIR/success_images.txt"
 FAILED_LIST="$LOG_DIR/failed_images.txt"
 
@@ -74,13 +76,13 @@ pull_image() {
 
     log "Pulling $IMAGE on $NODE"
 
-    # --- TIMEOUT CONTROL
     ssh -o ConnectTimeout=20 "$NODE" "timeout $TIME_OUT crictl pull $IMAGE" \
         >>"$LOGFILE" 2>&1
+
     local EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 124 ]; then
-        log "TIMEOUT: Pulling $IMAGE on $NODE exceeded 30 minutes"
+        log "TIMEOUT: Pulling $IMAGE on $NODE exceeded timeout"
         echo "$IMAGE - TIMEOUT" >> "$FAILED_LIST"
     elif [ $EXIT_CODE -eq 0 ]; then
         log "SUCCESS: $IMAGE on $NODE"
