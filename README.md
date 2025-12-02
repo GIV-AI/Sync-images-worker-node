@@ -88,7 +88,7 @@ Log files are stored in:
 
 | File | Description |
 |------|------------|
-| `image-sync_*.log` | Full execution logs |
+| `image-sync.log` | Full execution logs |
 | `success_images.log` | Images successfully pulled log |
 | `failed_images.log` | Images that failed to pull log |
 | `cron.log` | Log output when run via cron scheduler |
