@@ -3,12 +3,13 @@
 ###############################################################################
 # IMAGE SYNC SCRIPT - PREFIX FILTERED WITH EXACT TAG CHECK
 # Sync images between two Kubernetes worker nodes
+# This script will work via cron job to sync images 
 ###############################################################################
 
 # --- Load Config File ---
 CONFIG_FILE="$(dirname "$0")/image-sync.conf"
 
-if [ ! -f "$CONFIG_FILE" ]; then
+if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "ERROR: Config file not found: $CONFIG_FILE"
     exit 1
 fi
