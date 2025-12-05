@@ -1,0 +1,314 @@
+#!/bin/bash
+# ============================================================================
+# Image Sync - Main Executable
+# ============================================================================
+# Synchronizes container images between two Kubernetes worker nodes.
+# Compares images on both nodes and pulls missing images to ensure
+# both nodes have identical image sets.
+#
+# This script is designed to run via cron for automated synchronization.
+#
+# Author: Global Infoventures - GRIL Team
+# Date: 2025-12-04
+# ============================================================================
+
+set -o pipefail  # Exit if any command in pipeline fails
+
+# ============================================================================
+# SCRIPT DIRECTORY RESOLUTION (handles symlinks)
+# ============================================================================
+if [[ -L "${BASH_SOURCE[0]}" ]]; then
+    REAL_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+    SCRIPT_DIR="$(cd "$(dirname "$REAL_PATH")" && pwd)"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+readonly SCRIPT_DIR
+readonly LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# ============================================================================
+# LOAD COMMON LIBRARY
+# ============================================================================
+# shellcheck source=../lib/common.sh
+source "${LIB_DIR}/common.sh" || {
+    echo "ERROR: Failed to load common.sh from ${LIB_DIR}" >&2
+    exit 1
+}
+
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+readonly LOCK_FILE="/var/run/image-sync.lock"
+
+# ============================================================================
+# TEMPORARY FILES (will be cleaned up on exit)
+# ============================================================================
+TMP_SUCCESS_LIST=""
+TMP_FAILED_LIST=""
+
+# ============================================================================
+# CLEANUP TRAP
+# ============================================================================
+cleanup() {
+    local exit_code=$?
+
+    # Clean up temporary files
+    cleanup_temp_files "$TMP_SUCCESS_LIST" "$TMP_FAILED_LIST"
+
+    # Release lock (file descriptor 200)
+    # 200>&- is to close the file descriptor 200
+    exec 200>&- 2>/dev/null
+
+    exit $exit_code
+}
+
+#  trap is to trap the signal and execute the cleanup function
+#  EXIT is to trap the exit signal from the shell
+#  INT is to trap the interrupt signal - Ctrl+C
+#  TERM is to trap the terminate signal - kill -9
+#  The below line is to trap the exit signal from the shell, interrupt signal and terminate signal and execute the cleanup function
+trap cleanup EXIT INT TERM
+
+# ============================================================================
+# ACQUIRE LOCK
+# ============================================================================
+# Uses file descriptor (not filename) so lock persists for script lifetime
+# and auto-releases on process exit (even crashes), preventing stale locks.
+acquire_lock() {
+    exec 200>"$LOCK_FILE" # 200 is the file descriptor for the lock file
+    if ! flock -n 200; then #-n means non-blocking lock => fail if lock is already held
+        log_error "Script already running. Lock active: $LOCK_FILE"
+        exit 1
+    fi
+}
+
+# ============================================================================
+# IMAGE FUNCTIONS
+# ============================================================================
+
+# Extract repository image tags whose names start with the configured PREFIX1 (or PREFIX2, if defined).
+# This filters through the provided JSON and returns only images relevant for syncing to destination nodes.
+extract_images() {
+    local images_json="$1"
+    local pattern
+
+    # Build grep pattern from prefixes
+    if [[ -n "$PREFIX2" ]]; then #-n means not empty
+        pattern="^($PREFIX1|$PREFIX2)"
+    else
+        pattern="^($PREFIX1)"
+    fi
+
+    # ? means optional => return all repoTags even if some are null
+    echo "$images_json" | jq -r '.images[].repoTags[]?' 2>/dev/null \
+        | grep -E "$pattern" 2>/dev/null || true
+}
+
+# Pull a single image on a node with timeout
+pull_image() {
+    local node="$1"
+    local image="$2"
+    local exit_code
+    local output
+
+    log_info "Pulling $image on $node"
+
+    output=$(ssh -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" "$node" "timeout $TIME_OUT crictl pull $image" 2>&1)
+    exit_code=$?
+
+    # Log pull output at DEBUG level (respects size limits and level filtering)
+    if [[ -n "$output" ]]; then
+        log_debug "Pull output for $image on $node: $output"
+    fi
+
+    # 124 means timeout => handle separately
+    if [[ $exit_code -eq 124 ]]; then
+        log_error "TIMEOUT: Pulling $image on $node exceeded ${TIME_OUT}s"
+        append_failed "$node" "$image (TIMEOUT)"
+    elif [[ $exit_code -eq 0 ]]; then
+        log_success "$image on $node"
+        append_success "$node" "$image"
+    else
+        log_error "FAILED: $image on $node (Exit code: $exit_code)"
+        append_failed "$node" "$image (EXIT $exit_code)"
+    fi
+}
+
+# Pull images in parallel with MAX_PARALLEL limit
+pull_images_parallel() {
+    local node="$1"
+    shift # Remove node from arguments list
+    local -a images=("$@") # -a means array
+    local pulled=0
+
+    log_info "Pulling ${#images[@]} missing images on $node..."
+
+    for img in "${images[@]}"; do
+        # Skip empty entries
+        [[ -z "$img" ]] && continue
+
+        pull_image "$node" "$img" &
+        ((pulled++))
+
+        # Limit the number of parallel jobs to the value of MAX_PARALLEL.
+        # 
+        # jobs -rp:
+        #   - jobs: lists the active jobs in the current shell.
+        #   - -r : restricts the output to running jobs only (not stopped ones).
+        #   - -p : outputs only the process IDs.
+        # wc -l:
+        #   - Counts how many PIDs (i.e., running jobs) are returned, giving the current number of active background jobs.
+        # [[ ... -ge "$MAX_PARALLEL" ]]:
+        #   - Compares if the number of jobs is greater than or equal to the maximum allowed.
+        # sleep 1:
+        #   - Pauses the loop for 1 second before checking again.
+        #
+        # This loop enforces that only up to MAX_PARALLEL background "pull_image" jobs can run at a time.
+        while [[ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]]; do
+            sleep 1
+        done
+    done
+
+    wait
+
+    if [[ $pulled -eq 0 ]]; then
+        log_info "$node: No new images to pull"
+    else
+        log_info "$node: Pull operations completed ($pulled images processed)"
+    fi
+}
+
+# ============================================================================
+# RESULT TRACKING
+# ============================================================================
+
+append_success() {
+    local node="$1"
+    local image="$2"
+    local timestamp
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+    local entry="[$timestamp] $node $image - SUCCESS"
+
+    # Track in session temp file
+    echo "$entry" >> "$TMP_SUCCESS_LIST"
+    # Use centralized logging function (with rotation support)
+    log_success_image "$node" "$image"
+}
+
+append_failed() {
+    local node="$1"
+    local image="$2"
+    local timestamp
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+    local entry="[$timestamp] $node $image - FAILED"
+
+    # Track in session temp file
+    echo "$entry" >> "$TMP_FAILED_LIST"
+    # Use centralized logging function (with rotation support)
+    log_failed_image "$node" "$image"
+}
+
+# ============================================================================
+# MAIN SCRIPT LOGIC
+# ============================================================================
+main() {
+    # Acquire exclusive lock
+    acquire_lock
+
+    # Load and validate configuration
+    load_config || exit 1
+    validate_config || exit 1
+
+    # Initialize logging
+    init_logging || exit 1
+
+    # Create temporary files for session tracking
+    TMP_SUCCESS_LIST=$(mktemp)
+    TMP_FAILED_LIST=$(mktemp)
+
+    # Check dependencies
+    check_dependencies || exit 1
+
+    log_info "=== IMAGE SYNC STARTED ==="
+    log_info "Version: $VERSION"
+    log_info "Nodes: $NODE1 <-> $NODE2"
+    log_info "Prefixes: $PREFIX1${PREFIX2:+, $PREFIX2}"
+
+    # SSH connectivity check
+    check_ssh "$NODE1" || exit 1
+    check_ssh "$NODE2" || exit 1
+
+    # Fetch images from both nodes
+    log_info "Fetching images from nodes..."
+    local images_node1 images_node2
+    images_node1=$(get_images "$NODE1")
+    images_node2=$(get_images "$NODE2")
+
+    # Extract matching images
+    local list1 list2
+    list1=$(extract_images "$images_node1")
+    list2=$(extract_images "$images_node2")
+
+    local count1 count2
+    count1=$(echo "$list1" | grep -c . || echo 0)
+    count2=$(echo "$list2" | grep -c . || echo 0)
+
+    log_info "Images on $NODE1: $count1"
+    log_info "Images on $NODE2: $count2"
+
+    # Determine missing images using comm
+    # Declare two empty arrays to store the missing images on node1 and node2.
+    local -a missing_on_node1 missing_on_node2
+
+    # Images on node2 but not on node1
+    # `comm` is a command-line utility that compares two sorted files line by line and produces three columns:
+    #   1. Lines only in the first file
+    #   2. Lines only in the second file
+    #   3. Lines common to both files
+    #
+    # The option `-13` suppresses columns 1 and 3, so `comm -13 file1 file2` outputs lines only in the second file (file2) that do NOT appear in the first file (file1).
+    # In our context: we use `comm -13` to find images that are present on node2 but missing on node1.
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && missing_on_node1+=("$line")
+    done < <(comm -13 <(echo "$list1" | sort) <(echo "$list2" | sort))
+
+    # Images on node1 but not on node2
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && missing_on_node2+=("$line")
+    done < <(comm -23 <(echo "$list1" | sort) <(echo "$list2" | sort))
+
+    log_info "Missing on $NODE1: ${#missing_on_node1[@]}"
+    log_info "Missing on $NODE2: ${#missing_on_node2[@]}"
+
+    # Sync images
+    if [[ ${#missing_on_node1[@]} -eq 0 && ${#missing_on_node2[@]} -eq 0 ]]; then
+        log_info "All images are already synced"
+    else
+        if [[ ${#missing_on_node1[@]} -gt 0 ]]; then
+            log_info "Pulling missing images on $NODE1..."
+            pull_images_parallel "$NODE1" "${missing_on_node1[@]}"
+        fi
+
+        if [[ ${#missing_on_node2[@]} -gt 0 ]]; then
+            log_info "Pulling missing images on $NODE2..."
+            pull_images_parallel "$NODE2" "${missing_on_node2[@]}"
+        fi
+    fi
+
+    # Summary
+    local success_count failed_count
+    success_count=$(grep -c " - SUCCESS" "$TMP_SUCCESS_LIST" 2>/dev/null || echo 0)
+    failed_count=$(grep -c " - FAILED" "$TMP_FAILED_LIST" 2>/dev/null || echo 0)
+
+    log_info "=== SUMMARY ==="
+    log_info "Successful pulls (this session): $success_count"
+    log_info "Failed pulls (this session): $failed_count"
+    log_info "=== IMAGE SYNC COMPLETE ==="
+
+    return 0
+}
+
+# Run main function
+main "$@"
+
