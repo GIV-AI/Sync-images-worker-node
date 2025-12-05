@@ -87,17 +87,33 @@ acquire_lock() {
 # IMAGE FUNCTIONS
 # ============================================================================
 
+# Escape special regex metacharacters in a string for use with grep -E (ERE)
+# Characters escaped: . * + ? [ ] ^ $ { } ( ) | \
+escape_regex() {
+    local input="$1"
+    # Use printf to avoid issues with special characters in echo
+    # sed escapes all ERE metacharacters by prefixing with backslash
+    printf '%s' "$input" | sed 's/[.[\*^$()+?{|\\]/\\&/g'
+}
+
 # Extract repository image tags whose names start with the configured PREFIX1 (or PREFIX2, if defined).
 # This filters through the provided JSON and returns only images relevant for syncing to destination nodes.
 extract_images() {
     local images_json="$1"
     local pattern
+    local escaped_prefix1
+    local escaped_prefix2
 
-    # Build grep pattern from prefixes
-    if [[ -n "$PREFIX2" ]]; then #-n means not empty
-        pattern="^($PREFIX1|$PREFIX2)"
+    # Escape regex metacharacters in prefixes to ensure literal matching
+    # e.g., "nvcr.io/nvidia" becomes "nvcr\.io/nvidia" so . matches only literal dot
+    escaped_prefix1=$(escape_regex "$PREFIX1")
+
+    # Build grep pattern from escaped prefixes
+    if [[ -n "$PREFIX2" ]]; then
+        escaped_prefix2=$(escape_regex "$PREFIX2")
+        pattern="^($escaped_prefix1|$escaped_prefix2)"
     else
-        pattern="^($PREFIX1)"
+        pattern="^($escaped_prefix1)"
     fi
 
     # ? means optional => return all repoTags even if some are null
@@ -242,8 +258,16 @@ main() {
     # Fetch images from both nodes
     log_info "Fetching images from nodes..."
     local images_node1 images_node2
-    images_node1=$(get_images "$NODE1")
-    images_node2=$(get_images "$NODE2")
+
+    if ! images_node1=$(get_images "$NODE1"); then
+        log_error "Failed to fetch images from $NODE1. Aborting sync."
+        exit 1
+    fi
+
+    if ! images_node2=$(get_images "$NODE2"); then
+        log_error "Failed to fetch images from $NODE2. Aborting sync."
+        exit 1
+    fi
 
     # Extract matching images
     local list1 list2
