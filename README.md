@@ -2,6 +2,8 @@
 
 Synchronize container images between two Kubernetes worker nodes, ensuring image availability and consistency across nodes.
 
+**Version:** 2.0.0
+
 ## Image Sources
 
 - **Harbor images** → prefix: `bcm11` (headnode-hosted Harbor registry)
@@ -32,7 +34,7 @@ image-sync/
 │   └── common.sh            # Shared library (logging, config, SSH)
 ├── conf/
 │   └── image-sync.conf      # Default configuration template
-├── test/                    # Test documentation
+├── tests/                   # Test documentation
 ├── install.sh               # Installation script
 ├── uninstall.sh             # Uninstallation script
 └── README.md
@@ -80,25 +82,47 @@ The installer will:
 
 Configuration file: `/etc/image-sync/image-sync.conf`
 
+### Required Settings
+
 ```bash
-# REQUIRED: Worker node hostnames (SSH accessible)
+# Worker node hostnames (SSH accessible)
 NODE1="k8s-worker1"
 NODE2="k8s-worker2"
 
-# REQUIRED: Primary image prefix to sync
+# Primary image prefix to sync
 PREFIX1="bcm11"
 
-# REQUIRED: Logging directory
+# Logging directory
 LOG_DIR="/var/log/giindia/image-sync"
+```
 
-# OPTIONAL: Secondary image prefix (leave empty to disable)
+### Optional Settings
+
+```bash
+# Secondary image prefix (leave empty to disable)
 PREFIX2="nvcr.io/nvidia"
 
-# OPTIONAL: Timeout for pulling a single image (default: 1800 seconds)
+# Timeout for pulling a single image (default: 1800 seconds / 30 minutes)
 TIME_OUT=1800
 
-# OPTIONAL: Maximum parallel pulls per node (default: 4)
+# Maximum parallel pulls per node (default: 4)
 MAX_PARALLEL=4
+
+# SSH connection timeout in seconds (default: 10)
+SSH_CONNECT_TIMEOUT=10
+```
+
+### Log Management Settings
+
+```bash
+# Log level threshold: DEBUG, INFO, WARNING, ERROR (default: INFO)
+LOG_LEVEL="INFO"
+
+# Maximum size per daily log file in bytes (default: 10485760 / 10 MB)
+MAX_LOG_SIZE=10485760
+
+# Days to retain log files before automatic cleanup (default: 30)
+LOG_RETENTION_DAYS=30
 ```
 
 ### Configuration Notes
@@ -107,6 +131,9 @@ MAX_PARALLEL=4
 - `PREFIX1`: Replace `bcm11` with your Harbor registry hostname
 - `TIME_OUT`: Prevents stuck downloads; pulls exceeding this are terminated
 - `MAX_PARALLEL`: Higher values speed up sync but increase load
+- `LOG_LEVEL`: Set to `DEBUG` for verbose output during troubleshooting
+- `MAX_LOG_SIZE`: Once reached, no more entries are written for that day
+- `LOG_RETENTION_DAYS`: Old log files are automatically deleted on startup
 
 ---
 
@@ -136,12 +163,19 @@ sudo image-sync
 
 Log directory: `/var/log/giindia/image-sync/`
 
-| File | Description |
-|------|-------------|
-| `image-sync.log` | Full execution logs |
-| `success_images.log` | Successfully pulled images |
-| `failed_images.log` | Failed image pulls |
+Logs are created daily with date suffixes for automatic rotation and retention management.
+
+| File Pattern | Description |
+|--------------|-------------|
+| `image-sync-YYYY-MM-DD.log` | Full execution logs for that day |
+| `success_images-YYYY-MM-DD.log` | Successfully pulled images |
+| `failed_images-YYYY-MM-DD.log` | Failed image pulls |
 | `cron.log` | Output when run via cron |
+
+### Log Retention
+
+- Old log files (older than `LOG_RETENTION_DAYS`) are automatically cleaned up on each run
+- Daily log files have a maximum size limit (`MAX_LOG_SIZE`) to prevent disk space issues
 
 ---
 
@@ -201,10 +235,22 @@ Check cron output:
 sudo tail -f /var/log/giindia/image-sync/cron.log
 ```
 
-Check last sync results:
+Check today's sync results:
 
 ```bash
-sudo tail -50 /var/log/giindia/image-sync/image-sync.log
+sudo tail -50 /var/log/giindia/image-sync/image-sync-$(date +%Y-%m-%d).log
+```
+
+Check recent successful pulls:
+
+```bash
+sudo tail -20 /var/log/giindia/image-sync/success_images-$(date +%Y-%m-%d).log
+```
+
+Check recent failures:
+
+```bash
+sudo cat /var/log/giindia/image-sync/failed_images-$(date +%Y-%m-%d).log
 ```
 
 ### Disabling Cron Job
@@ -311,6 +357,26 @@ sudo apt-get install jq
 
 # RHEL/CentOS
 sudo yum install jq
+```
+
+### Image Pull Timeout
+
+```
+ERROR: TIMEOUT: Pulling <image> on <node> exceeded 1800s
+```
+
+**Solution**: Increase `TIME_OUT` in configuration if large images are expected:
+```bash
+sudo nano /etc/image-sync/image-sync.conf
+# Set TIME_OUT=3600 for 1 hour timeout
+```
+
+### Debug Mode
+
+For verbose logging during troubleshooting:
+```bash
+sudo nano /etc/image-sync/image-sync.conf
+# Set LOG_LEVEL="DEBUG"
 ```
 
 ---
