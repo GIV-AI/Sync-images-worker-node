@@ -24,7 +24,7 @@ The following container images are automatically synchronized between worker nod
 
 | Image Source | Description |
 |--------------|-------------|
-| **Harbor Registry** | Internal images hosted on the headnode Harbor registry (images starting with `bcm11`) |
+| **Harbor Registry** | Internal images hosted on the headnode Harbor registry |
 | **NVIDIA NGC** | GPU-optimized images from NVIDIA NGC catalog (images starting with `nvcr.io/nvidia`) |
 
 > **Note:** Only images matching these prefixes are synced. External images from Docker Hub or other registries are not included.
