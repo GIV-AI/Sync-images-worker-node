@@ -209,7 +209,6 @@ if [[ -d "$LOG_DIR" ]]; then
         safe_remove_dir "$LOG_DIR"
 
         # Clean up parent directory if empty
-        local parent_dir
         parent_dir="$(dirname "$LOG_DIR")"
         if [[ -d "$parent_dir" ]] && [[ -z "$(ls -A "$parent_dir")" ]]; then
             rmdir -- "$parent_dir" 2>/dev/null || true

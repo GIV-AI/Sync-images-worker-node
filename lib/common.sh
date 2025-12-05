@@ -299,9 +299,10 @@ get_images() {
     local output
     local exit_code
 
-    if ! output=$(ssh -o ConnectTimeout="$timeout" "$node" "crictl images -o json" 2>&1); then
+    # Don't use 2>&1 - crictl warnings go to stderr and would corrupt JSON
+    if ! output=$(ssh -o ConnectTimeout="$timeout" "$node" "crictl images -o json" 2>/dev/null); then
         exit_code=$?
-        log_error "Failed to get images from $node (exit code: $exit_code): $output"
+        log_error "Failed to get images from $node (exit code: $exit_code)"
         return 1
     fi
 
