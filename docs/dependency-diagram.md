@@ -137,3 +137,4 @@ flowchart LR
 | `MAX_LOG_SIZE` | `safe_append_log()` | 10MB |
 | `LOG_RETENTION_DAYS` | `cleanup_old_logs()` | 30 |
 
+
