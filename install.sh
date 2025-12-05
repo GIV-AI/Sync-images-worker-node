@@ -134,10 +134,10 @@ mkdir -p "$LOG_DIR"
 
 umask "$OLD_UMASK"
 
-# Set directory permissions
-chmod 755 "$INSTALL_DIR"
-chmod 755 "${INSTALL_DIR}/bin"
-chmod 755 "${INSTALL_DIR}/lib"
+# Set directory permissions (750 = root-only access, follows least privilege)
+chmod 750 "$INSTALL_DIR"
+chmod 750 "${INSTALL_DIR}/bin"
+chmod 750 "${INSTALL_DIR}/lib"
 chmod 750 "$CONFIG_DIR"
 chmod 750 "$LOG_DIR"
 
@@ -151,7 +151,7 @@ log_info "Installing application files..."
 
 if [[ -f "${SCRIPT_DIR}/bin/image-sync" && ! -L "${SCRIPT_DIR}/bin/image-sync" ]]; then
     cp -f -- "${SCRIPT_DIR}/bin/image-sync" "${INSTALL_DIR}/bin/"
-    chmod 755 "${INSTALL_DIR}/bin/image-sync"
+    chmod 700 "${INSTALL_DIR}/bin/image-sync"
 else
     log_error "Invalid source: bin/image-sync"
     exit 1
@@ -159,7 +159,7 @@ fi
 
 if [[ -f "${SCRIPT_DIR}/lib/common.sh" && ! -L "${SCRIPT_DIR}/lib/common.sh" ]]; then
     cp -f -- "${SCRIPT_DIR}/lib/common.sh" "${INSTALL_DIR}/lib/"
-    chmod 644 "${INSTALL_DIR}/lib/common.sh"
+    chmod 600 "${INSTALL_DIR}/lib/common.sh"
 else
     log_error "Invalid source: lib/common.sh"
     exit 1
